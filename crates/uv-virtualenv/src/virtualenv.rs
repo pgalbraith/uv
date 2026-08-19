@@ -196,14 +196,19 @@ pub(crate) fn create(
     // Use the absolute path for all further operations.
     let location = absolute;
 
-    let bin_name = if cfg!(unix) {
-        "bin"
-    } else if cfg!(windows) {
-        "Scripts"
-    } else {
-        unimplemented!("Only Windows and Unix are supported")
-    };
     let scripts = location.join(&interpreter.virtualenv().scripts);
+    // The activators export this directory on `PATH`, so it has to be the
+    // one the environment actually has rather than the one the host
+    // platform usually has. They differ for a Unix-shaped Python on
+    // Windows: MSYS2's CPython reports `bin` where a regular Windows
+    // CPython reports `Scripts`, and `scripts` above is already built from
+    // that report. Deriving both from it keeps an activator from exporting
+    // a directory that was never created.
+    let bin_name = interpreter
+        .virtualenv()
+        .scripts
+        .to_string_lossy()
+        .into_owned();
 
     // Add the CACHEDIR.TAG.
     cachedir::ensure_tag(&location)?;
@@ -527,7 +532,7 @@ pub(crate) fn create(
 
         let bin_name = match *name {
             "activate.xsh" => Cow::Owned(bin_name.escape_for_python()),
-            _ => Cow::Borrowed(bin_name),
+            _ => Cow::Borrowed(bin_name.as_str()),
         };
 
         let activator = template

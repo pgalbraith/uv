@@ -471,7 +471,12 @@ impl TorchStrategy {
                             })
                             .chain(std::iter::once(TorchBackend::Cpu.index_url(*source))),
                     ))),
-                    Os::Macos { .. }
+                    // The CUDA indexes only serve MSVC-built wheels, which are incompatible with
+                    // MinGW-, MSYS-, and Cygwin-built CPython.
+                    Os::Mingw { .. }
+                    | Os::Msys { .. }
+                    | Os::Cygwin { .. }
+                    | Os::Macos { .. }
                     | Os::FreeBsd { .. }
                     | Os::NetBsd { .. }
                     | Os::OpenBsd { .. }
@@ -504,6 +509,9 @@ impl TorchStrategy {
                         .chain(std::iter::once(TorchBackend::Cpu.index_url(*source))),
                 )),
                 Os::Windows
+                | Os::Mingw { .. }
+                | Os::Msys { .. }
+                | Os::Cygwin { .. }
                 | Os::Macos { .. }
                 | Os::FreeBsd { .. }
                 | Os::NetBsd { .. }
@@ -523,6 +531,9 @@ impl TorchStrategy {
                     std::iter::once(TorchBackend::Xpu.index_url(*source)),
                 ))),
                 Os::Musllinux { .. }
+                | Os::Mingw { .. }
+                | Os::Msys { .. }
+                | Os::Cygwin { .. }
                 | Os::Macos { .. }
                 | Os::FreeBsd { .. }
                 | Os::NetBsd { .. }

@@ -709,6 +709,47 @@ fn compatible_tags(platform: &Platform) -> Result<Vec<PlatformTag>, PlatformErro
             vec![PlatformTag::WinAmd64]
         }
         (Os::Windows, Arch::Aarch64) => vec![PlatformTag::WinArm64],
+        (Os::Mingw { variant }, _) => {
+            // A MinGW-built CPython (e.g., MSYS2's) is binary-incompatible with MSVC-built
+            // CPython, so it must not match MSVC wheels (`win_amd64`, etc.). Mirror pip, which
+            // uses the interpreter's patched `sysconfig.get_platform()` verbatim: the only
+            // compatible platform tag is the one the interpreter itself reports. The variant
+            // already encodes the architecture, so `arch` is not consulted.
+            vec![PlatformTag::Mingw {
+                variant: variant.parse::<ReleaseArch>().map_err(|error| {
+                    PlatformError::InvalidReleaseArch {
+                        release_arch: variant.clone(),
+                        error,
+                    }
+                })?,
+            }]
+        }
+        (Os::Msys { variant }, _) => {
+            // Like MinGW: a POSIX-personality CPython hosted on Windows only matches wheels
+            // carrying its own reported platform string. The variant already encodes the
+            // architecture, so `arch` is not consulted.
+            vec![PlatformTag::Msys {
+                variant: variant.parse::<ReleaseArch>().map_err(|error| {
+                    PlatformError::InvalidReleaseArch {
+                        release_arch: variant.clone(),
+                        error,
+                    }
+                })?,
+            }]
+        }
+        (Os::Cygwin { variant }, _) => {
+            // Like MinGW: a POSIX-personality CPython hosted on Windows only matches wheels
+            // carrying its own reported platform string. The variant already encodes the
+            // architecture, so `arch` is not consulted.
+            vec![PlatformTag::Cygwin {
+                variant: variant.parse::<ReleaseArch>().map_err(|error| {
+                    PlatformError::InvalidReleaseArch {
+                        release_arch: variant.clone(),
+                        error,
+                    }
+                })?,
+            }]
+        }
         (Os::FreeBsd { release }, arch) => {
             let release_tag = release.replace(['.', '-'], "_").to_lowercase();
             let arch_tag = arch.machine();
@@ -1239,6 +1280,46 @@ mod tests {
             "musllinux_1_1_x86_64",
             "musllinux_1_0_x86_64",
             "linux_x86_64",
+        ]
+        "#
+        );
+    }
+
+    #[test]
+    fn test_platform_tags_mingw() {
+        let tags = compatible_tags(&Platform::new(
+            Os::Mingw {
+                variant: "x86_64_ucrt_gnu".to_string(),
+            },
+            Arch::X86_64,
+        ))
+        .unwrap();
+        let tags = tags.iter().map(ToString::to_string).collect::<Vec<_>>();
+        assert_debug_snapshot!(
+            tags,
+            @r#"
+        [
+            "mingw_x86_64_ucrt_gnu",
+        ]
+        "#
+        );
+    }
+
+    #[test]
+    fn test_platform_tags_cygwin() {
+        let tags = compatible_tags(&Platform::new(
+            Os::Cygwin {
+                variant: "3_4_6_x86_64".to_string(),
+            },
+            Arch::X86_64,
+        ))
+        .unwrap();
+        let tags = tags.iter().map(ToString::to_string).collect::<Vec<_>>();
+        assert_debug_snapshot!(
+            tags,
+            @r#"
+        [
+            "cygwin_3_4_6_x86_64",
         ]
         "#
         );

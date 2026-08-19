@@ -933,6 +933,10 @@ pub enum InterpreterInfoError {
     BrokenMacVer,
     #[error("Unknown operating system: `{operating_system}`")]
     UnknownOperatingSystem { operating_system: String },
+    #[error(
+        "The interpreter reports the operating system as `{operating_system}`, a POSIX-personality (MSYS2-runtime) system name renamed by the active `MSYSTEM` environment; its platform identity depends on the shell it is queried from, so it cannot be used. Use this shell's MinGW-built Python instead."
+    )]
+    MsystemRenamedOperatingSystem { operating_system: String },
     #[error("Python {python_version} is not supported. Please use Python 3.6 or newer.")]
     UnsupportedPythonVersion { python_version: String },
     #[error("Python executable does not support `-I` flag. Please use Python 3.6 or newer.")]

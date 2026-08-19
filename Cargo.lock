@@ -7105,6 +7105,7 @@ dependencies = [
  "rkyv",
  "rustc-hash",
  "serde",
+ "serde_json",
  "thiserror",
  "uv-small-str",
 ]

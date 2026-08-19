@@ -100,7 +100,12 @@ impl From<&uv_platform_tags::Os> for Os {
             uv_platform_tags::Os::OpenBsd { .. } => {
                 Self::new(target_lexicon::OperatingSystem::Openbsd)
             }
-            uv_platform_tags::Os::Windows => Self::new(target_lexicon::OperatingSystem::Windows),
+            uv_platform_tags::Os::Windows
+            | uv_platform_tags::Os::Mingw { .. }
+            | uv_platform_tags::Os::Msys { .. }
+            | uv_platform_tags::Os::Cygwin { .. } => {
+                Self::new(target_lexicon::OperatingSystem::Windows)
+            }
             uv_platform_tags::Os::Pyodide { .. } | uv_platform_tags::Os::PyEmscripten { .. } => {
                 Self::new(target_lexicon::OperatingSystem::Emscripten)
             }

@@ -596,6 +596,97 @@ def get_operating_system_and_architecture():
             "name": operating_system,
             "release": version,
         }
+    elif operating_system.startswith("mingw_"):
+        # MSYS2's CPython is a Windows interpreter built by a MinGW
+        # toolchain, patched to report `mingw_{arch}_{crt}_{compiler}`
+        # rather than `win-{arch}`, e.g. `mingw_x86_64_ucrt_gnu`
+        # (UCRT64), `mingw_x86_64_msvcrt_gnu` (MINGW64), or
+        # `mingw_aarch64_ucrt_llvm` (CLANGARM64); older patch
+        # generations reported just `mingw_{arch}`. The string carries
+        # no `-`, so the split above left the whole of it here and the
+        # architecture empty.
+        #
+        # The full suffix is forwarded as the `variant`: it is the
+        # platform tag the interpreter's patched pip uses, and encodes
+        # the C runtime and compiler, which determine binary
+        # compatibility. MSVC-built wheels (`win_amd64`, etc.) are
+        # incompatible with these interpreters.
+        #
+        # 32-bit MinGW reports `i686`, so there is deliberately no bare
+        # `x86` entry: it would swallow the `x86` of a malformed
+        # `x86_64...` as a 32-bit build.
+        remainder = operating_system[len("mingw_") :]
+        for name, mingw_architecture in (
+            ("x86_64", "x86_64"),
+            ("aarch64", "aarch64"),
+            ("arm64", "aarch64"),
+            ("armv7", "armv7l"),
+            ("i686", "i686"),
+        ):
+            if remainder == name or remainder.startswith(name + "_"):
+                architecture = mingw_architecture
+                break
+        else:
+            print(
+                json.dumps(
+                    {
+                        "result": "error",
+                        "kind": "unknown_operating_system",
+                        "operating_system": operating_system,
+                    }
+                )
+            )
+            sys.exit(0)
+        operating_system = {
+            "name": "mingw",
+            "variant": remainder,
+        }
+    elif operating_system.split("_", 1)[0] in ("msys", "cygwin"):
+        # POSIX-personality CPython hosted on Windows: MSYS2's native
+        # `python` (linked against `msys-2.0.dll`) and Cygwin's CPython
+        # follow the Unix build path, so `sysconfig.get_platform()`
+        # reports `{uname}-{release}-{machine}`, e.g.
+        # `cygwin-3.4.6-x86_64` or
+        # `msys_nt-10.0-19045-3.4.10.x86_64-x86_64`. Like MinGW builds,
+        # these are binary-incompatible with MSVC wheels (`win_amd64`,
+        # ...); unlike MinGW builds, they also depend on their POSIX
+        # emulation DLL at runtime. The normalized remainder is
+        # forwarded opaquely as the platform tag, mirroring pip's use
+        # of the whole normalized string.
+        family, _, os_remainder = operating_system.partition("_")
+        variant = "_".join(
+            part for part in (os_remainder, version, architecture) if part
+        )
+        variant = "".join(
+            c
+            if "a" <= c <= "z" or "A" <= c <= "Z" or "0" <= c <= "9" or c == "_"
+            else "_"
+            for c in variant
+        )
+        operating_system = {
+            "name": family,
+            "variant": variant,
+        }
+    elif operating_system.endswith("_nt"):
+        # A POSIX-personality (MSYS2-runtime) CPython whose `uname`
+        # sysname was renamed by the active `MSYSTEM` environment, e.g.
+        # the native MSYS python reporting `mingw64_nt-...` when
+        # queried from a MINGW64 or UCRT64 shell (`msys_nt` itself is
+        # handled above, and the MinGW-built python never takes this
+        # path: its platform string is compiled in). The same binary
+        # reports a different identity per shell, so it has no stable
+        # platform tag; reject it deliberately rather than classifying
+        # it under an environment-dependent name.
+        print(
+            json.dumps(
+                {
+                    "result": "error",
+                    "kind": "msystem_renamed_operating_system",
+                    "operating_system": operating_system,
+                }
+            )
+        )
+        sys.exit(0)
     else:
         print(
             json.dumps(

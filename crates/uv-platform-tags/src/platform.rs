@@ -54,6 +54,9 @@ impl Platform {
         let os = match self.os() {
             Os::Manylinux { .. } | Os::Musllinux { .. } => "Linux",
             Os::Windows => "Windows",
+            Os::Mingw { .. } => "Windows (MinGW)",
+            Os::Msys { .. } => "Windows (MSYS)",
+            Os::Cygwin { .. } => "Windows (Cygwin)",
             Os::Pyodide { .. } => "Pyodide",
             Os::PyEmscripten { .. } => "Emscripten",
             Os::Macos { .. } => "macOS",
@@ -83,6 +86,27 @@ pub enum Os {
         minor: u16,
     },
     Windows,
+    /// A Windows CPython built by a MinGW-w64 toolchain (e.g., MSYS2's `mingw-w64-python`), which
+    /// is binary-incompatible with MSVC-built CPython. The variant preserves the suffix of the
+    /// interpreter's patched `sysconfig.get_platform()` (e.g., `x86_64_ucrt_gnu` from
+    /// `mingw_x86_64_ucrt_gnu`), which encodes the architecture, C runtime, and compiler.
+    Mingw {
+        variant: String,
+    },
+    /// A POSIX-personality CPython hosted on Windows via MSYS2's runtime (`msys-2.0.dll`), built
+    /// through the Unix `configure` path. The variant preserves the normalized remainder of
+    /// `sysconfig.get_platform()` after the `msys` prefix (e.g., `nt_10_0_19045_x86_64`), which is
+    /// what pip uses as the platform tag. Binary-incompatible with both MSVC and MinGW builds.
+    Msys {
+        variant: String,
+    },
+    /// A POSIX-personality CPython hosted on Windows via Cygwin (`cygwin1.dll`), built through the
+    /// Unix `configure` path. The variant preserves the normalized remainder of
+    /// `sysconfig.get_platform()` after the `cygwin` prefix (e.g., `3_4_6_x86_64`). Binary-
+    /// incompatible with both MSVC and MinGW builds.
+    Cygwin {
+        variant: String,
+    },
     Pyodide {
         major: u16,
         minor: u16,
@@ -130,6 +154,9 @@ impl fmt::Display for Os {
             Self::Manylinux { .. } => write!(f, "manylinux"),
             Self::Musllinux { .. } => write!(f, "musllinux"),
             Self::Windows => write!(f, "windows"),
+            Self::Mingw { .. } => write!(f, "mingw"),
+            Self::Msys { .. } => write!(f, "msys"),
+            Self::Cygwin { .. } => write!(f, "cygwin"),
             Self::Macos { .. } => write!(f, "macos"),
             Self::FreeBsd { .. } => write!(f, "freebsd"),
             Self::NetBsd { .. } => write!(f, "netbsd"),
@@ -302,6 +329,46 @@ mod tests {
         );
 
         assert_eq!(platform.pretty(), "Linux x86_64");
+    }
+
+    #[test]
+    fn platform_deserialize_mingw() {
+        // The shape emitted by `get_interpreter_info.py` for an MSYS2 MinGW-built CPython.
+        let platform: Platform = serde_json::from_str(
+            r#"{"os": {"name": "mingw", "variant": "x86_64_ucrt_gnu"}, "arch": "x86_64"}"#,
+        )
+        .unwrap();
+
+        assert_eq!(
+            platform,
+            Platform::new(
+                Os::Mingw {
+                    variant: "x86_64_ucrt_gnu".to_string(),
+                },
+                Arch::X86_64,
+            )
+        );
+        assert_eq!(platform.pretty(), "Windows (MinGW) x86_64");
+    }
+
+    #[test]
+    fn platform_deserialize_msys() {
+        // The shape emitted by `get_interpreter_info.py` for MSYS2's POSIX-personality CPython.
+        let platform: Platform = serde_json::from_str(
+            r#"{"os": {"name": "msys", "variant": "nt_10_0_19045_x86_64"}, "arch": "x86_64"}"#,
+        )
+        .unwrap();
+
+        assert_eq!(
+            platform,
+            Platform::new(
+                Os::Msys {
+                    variant: "nt_10_0_19045_x86_64".to_string(),
+                },
+                Arch::X86_64,
+            )
+        );
+        assert_eq!(platform.pretty(), "Windows (MSYS) x86_64");
     }
 
     #[test]

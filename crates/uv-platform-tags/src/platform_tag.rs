@@ -38,6 +38,28 @@ impl FromStr for ReleaseArch {
     }
 }
 
+impl ReleaseArch {
+    /// Returns `true` if the suffix starts with the given `_`-separated component: `x86_64`
+    /// matches `x86_64_ucrt_gnu` and `x86_64`, but neither `x86_64abc` nor `x86`.
+    pub(crate) fn starts_with_component(&self, component: &str) -> bool {
+        let value: &str = self.0.as_ref();
+        value == component
+            || value
+                .strip_prefix(component)
+                .is_some_and(|rest| rest.starts_with('_'))
+    }
+
+    /// Returns `true` if the suffix ends with the given `_`-separated component: `x86_64` matches
+    /// `3_4_6_x86_64` and `x86_64`, but neither `abcx86_64` nor `x86`.
+    pub(crate) fn ends_with_component(&self, component: &str) -> bool {
+        let value: &str = self.0.as_ref();
+        value == component
+            || value
+                .strip_suffix(component)
+                .is_some_and(|rest| rest.ends_with('_'))
+    }
+}
+
 impl std::fmt::Display for ReleaseArch {
     fn fmt(&self, f: &mut Formatter<'_>) -> std::fmt::Result {
         self.0.fmt(f)
@@ -123,6 +145,30 @@ pub enum PlatformTag {
         /// Not to be confused with the Linux mulitarch concept.
         multiarch: IosMultiarch,
     },
+    /// Ex) `mingw_x86_64_ucrt_gnu`
+    ///
+    /// A Windows wheel built by a MinGW-w64 toolchain (e.g., under MSYS2), which is
+    /// binary-incompatible with MSVC-built wheels (`win_amd64`, etc.). The variant is the opaque
+    /// suffix of the interpreter's patched `sysconfig.get_platform()`, encoding the architecture,
+    /// C runtime, and compiler (e.g., `x86_64_ucrt_gnu`).
+    ///
+    /// This variant is appended at the end of the enum to keep the `rkyv` discriminants of the
+    /// preceding variants stable for cached data.
+    Mingw { variant: ReleaseArch },
+    /// Ex) `msys_nt_10_0_19045_x86_64`
+    ///
+    /// A wheel built by MSYS2's POSIX-personality CPython (linked against `msys-2.0.dll`). The
+    /// variant is the normalized remainder of the interpreter's `sysconfig.get_platform()` after
+    /// the `msys` prefix, ending in the architecture. Binary-incompatible with MSVC and MinGW
+    /// wheels.
+    Msys { variant: ReleaseArch },
+    /// Ex) `cygwin_3_4_6_x86_64`
+    ///
+    /// A wheel built by Cygwin's POSIX-personality CPython (linked against `cygwin1.dll`). The
+    /// variant is the normalized remainder of the interpreter's `sysconfig.get_platform()` after
+    /// the `cygwin` prefix, ending in the architecture. Binary-incompatible with MSVC and MinGW
+    /// wheels.
+    Cygwin { variant: ReleaseArch },
 }
 
 impl PlatformTag {
@@ -152,6 +198,9 @@ impl PlatformTag {
             Self::Pyodide { .. } => Some("Pyodide"),
             Self::PyEmscripten { .. } => Some("Emscripten"),
             Self::Ios { .. } => Some("iOS"),
+            Self::Mingw { .. } => Some("MinGW"),
+            Self::Msys { .. } => Some("MSYS"),
+            Self::Cygwin { .. } => Some("Cygwin"),
         }
     }
 }
@@ -197,15 +246,32 @@ impl PlatformTag {
     }
 
     /// Returns `true` if the platform is Windows-only.
+    ///
+    /// MinGW, MSYS, and Cygwin wheels only run on Windows hosts, albeit with ABIs distinct from
+    /// MSVC builds (and from each other).
     pub fn is_windows(&self) -> bool {
         matches!(
             self,
-            Self::Win32 | Self::WinAmd64 | Self::WinArm64 | Self::WinIa64
+            Self::Win32
+                | Self::WinAmd64
+                | Self::WinArm64
+                | Self::WinIa64
+                | Self::Mingw { .. }
+                | Self::Msys { .. }
+                | Self::Cygwin { .. }
         )
     }
 
     /// Returns `true` if the tag is only applicable on ARM platforms.
     pub fn is_arm(&self) -> bool {
+        // MinGW variants lead with the architecture; MSYS and Cygwin variants end with it.
+        if let Self::Mingw { variant } = self {
+            return variant.starts_with_component("aarch64")
+                || variant.starts_with_component("armv7");
+        }
+        if let Self::Msys { variant } | Self::Cygwin { variant } = self {
+            return variant.ends_with_component("aarch64");
+        }
         matches!(
             self,
             Self::Manylinux {
@@ -242,6 +308,12 @@ impl PlatformTag {
 
     /// Returns `true` if the tag is only applicable on `x86_64` platforms.
     pub fn is_x86_64(&self) -> bool {
+        if let Self::Mingw { variant } = self {
+            return variant.starts_with_component("x86_64");
+        }
+        if let Self::Msys { variant } | Self::Cygwin { variant } = self {
+            return variant.ends_with_component("x86_64");
+        }
         matches!(
             self,
             Self::Manylinux {
@@ -274,6 +346,12 @@ impl PlatformTag {
 
     /// Returns `true` if the tag is only applicable on x86 platforms.
     pub fn is_x86(&self) -> bool {
+        if let Self::Mingw { variant } = self {
+            return variant.starts_with_component("i686");
+        }
+        if let Self::Msys { variant } | Self::Cygwin { variant } = self {
+            return variant.ends_with_component("i686");
+        }
         matches!(
             self,
             Self::Manylinux {
@@ -459,6 +537,9 @@ impl std::fmt::Display for PlatformTag {
             Self::WinAmd64 => write!(f, "win_amd64"),
             Self::WinArm64 => write!(f, "win_arm64"),
             Self::WinIa64 => write!(f, "win_ia64"),
+            Self::Mingw { variant } => write!(f, "mingw_{variant}"),
+            Self::Msys { variant } => write!(f, "msys_{variant}"),
+            Self::Cygwin { variant } => write!(f, "cygwin_{variant}"),
             Self::Android { api_level, abi } => write!(f, "android_{api_level}_{abi}"),
             Self::FreeBsd { release_arch } => write!(f, "freebsd_{release_arch}"),
             Self::NetBsd { release_arch } => write!(f, "netbsd_{release_arch}"),
@@ -721,6 +802,51 @@ impl FromStr for PlatformTag {
                 })?;
 
             return Ok(Self::Android { api_level, abi });
+        }
+
+        if let Some(rest) = s.strip_prefix("mingw_") {
+            // Ex) mingw_x86_64_ucrt_gnu
+            if rest.is_empty() {
+                return Err(ParsePlatformTagError::InvalidFormat {
+                    platform: "mingw",
+                    tag: s.to_string(),
+                });
+            }
+            return Ok(Self::Mingw {
+                variant: rest
+                    .parse::<ReleaseArch>()
+                    .map_err(|_| ParsePlatformTagError::InvalidCharacters { tag: s.to_string() })?,
+            });
+        }
+
+        if let Some(rest) = s.strip_prefix("msys_") {
+            // Ex) msys_nt_10_0_19045_x86_64
+            if rest.is_empty() {
+                return Err(ParsePlatformTagError::InvalidFormat {
+                    platform: "msys",
+                    tag: s.to_string(),
+                });
+            }
+            return Ok(Self::Msys {
+                variant: rest
+                    .parse::<ReleaseArch>()
+                    .map_err(|_| ParsePlatformTagError::InvalidCharacters { tag: s.to_string() })?,
+            });
+        }
+
+        if let Some(rest) = s.strip_prefix("cygwin_") {
+            // Ex) cygwin_3_4_6_x86_64
+            if rest.is_empty() {
+                return Err(ParsePlatformTagError::InvalidFormat {
+                    platform: "cygwin",
+                    tag: s.to_string(),
+                });
+            }
+            return Ok(Self::Cygwin {
+                variant: rest
+                    .parse::<ReleaseArch>()
+                    .map_err(|_| ParsePlatformTagError::InvalidCharacters { tag: s.to_string() })?,
+            });
         }
 
         if let Some(rest) = s.strip_prefix("freebsd_") {
@@ -1196,6 +1322,117 @@ mod tests {
             Ok(PlatformTag::WinArm64)
         );
         assert_eq!(PlatformTag::WinArm64.to_string(), "win_arm64");
+    }
+
+    #[test]
+    fn mingw_platform() {
+        assert_eq!(
+            PlatformTag::from_str("mingw_x86_64_ucrt_gnu"),
+            Ok(PlatformTag::Mingw {
+                variant: ReleaseArch::from_str("x86_64_ucrt_gnu").unwrap()
+            })
+        );
+        assert_eq!(
+            PlatformTag::Mingw {
+                variant: ReleaseArch::from_str("x86_64_ucrt_gnu").unwrap()
+            }
+            .to_string(),
+            "mingw_x86_64_ucrt_gnu"
+        );
+        assert_eq!(
+            PlatformTag::from_str("mingw_"),
+            Err(ParsePlatformTagError::InvalidFormat {
+                platform: "mingw",
+                tag: "mingw_".to_string()
+            })
+        );
+    }
+
+    #[test]
+    fn mingw_platform_arch() {
+        let tag = PlatformTag::from_str("mingw_x86_64_ucrt_gnu").unwrap();
+        assert!(tag.is_windows());
+        assert!(tag.is_x86_64());
+        assert!(!tag.is_x86());
+        assert!(!tag.is_arm());
+
+        let tag = PlatformTag::from_str("mingw_aarch64_ucrt_llvm").unwrap();
+        assert!(tag.is_arm());
+        assert!(!tag.is_x86_64());
+
+        // Older generations of the MSYS2 patch reported the architecture without a CRT or
+        // compiler suffix.
+        let tag = PlatformTag::from_str("mingw_i686").unwrap();
+        assert!(tag.is_x86());
+        assert!(!tag.is_x86_64());
+    }
+
+    #[test]
+    fn msys_platform() {
+        assert_eq!(
+            PlatformTag::from_str("msys_nt_10_0_19045_x86_64"),
+            Ok(PlatformTag::Msys {
+                variant: ReleaseArch::from_str("nt_10_0_19045_x86_64").unwrap()
+            })
+        );
+        assert_eq!(
+            PlatformTag::Msys {
+                variant: ReleaseArch::from_str("nt_10_0_19045_x86_64").unwrap()
+            }
+            .to_string(),
+            "msys_nt_10_0_19045_x86_64"
+        );
+        assert_eq!(
+            PlatformTag::from_str("msys_"),
+            Err(ParsePlatformTagError::InvalidFormat {
+                platform: "msys",
+                tag: "msys_".to_string()
+            })
+        );
+    }
+
+    #[test]
+    fn cygwin_platform() {
+        assert_eq!(
+            PlatformTag::from_str("cygwin_3_4_6_x86_64"),
+            Ok(PlatformTag::Cygwin {
+                variant: ReleaseArch::from_str("3_4_6_x86_64").unwrap()
+            })
+        );
+        assert_eq!(
+            PlatformTag::Cygwin {
+                variant: ReleaseArch::from_str("3_4_6_x86_64").unwrap()
+            }
+            .to_string(),
+            "cygwin_3_4_6_x86_64"
+        );
+        assert_eq!(
+            PlatformTag::from_str("cygwin_"),
+            Err(ParsePlatformTagError::InvalidFormat {
+                platform: "cygwin",
+                tag: "cygwin_".to_string()
+            })
+        );
+    }
+
+    #[test]
+    fn msys_cygwin_platform_arch() {
+        // MSYS and Cygwin variants end with the architecture, unlike MinGW variants, which lead
+        // with it.
+        let tag = PlatformTag::from_str("msys_nt_10_0_19045_x86_64").unwrap();
+        assert!(tag.is_windows());
+        assert!(tag.is_x86_64());
+        assert!(!tag.is_x86());
+        assert!(!tag.is_arm());
+
+        let tag = PlatformTag::from_str("cygwin_3_4_6_i686").unwrap();
+        assert!(tag.is_windows());
+        assert!(tag.is_x86());
+        assert!(!tag.is_x86_64());
+
+        let tag = PlatformTag::from_str("cygwin_3_4_6_aarch64").unwrap();
+        assert!(tag.is_arm());
+        assert!(!tag.is_x86_64());
     }
 
     #[test]
