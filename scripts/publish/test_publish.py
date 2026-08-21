@@ -1,12 +1,13 @@
 # /// script
 # requires-python = ">=3.12"
 # dependencies = [
-#     "httpx>=0.28.1,<0.29",
+#     "httpx[socks]>=0.28.1,<0.29",
 #     "packaging>=24.1,<25",
 #     "pypi-attestations==0.0.28",
 #     "sigstore==4.4.0",
 # ]
 # [tool.uv]
+# no-build = true
 # exclude-newer = "P7D"
 # ///
 
@@ -359,8 +360,8 @@ def build_project_at_version(
         )
         init_py.write_text("x = 1")
 
-    # Build the project
-    check_call([uv, "build"], cwd=project_root)
+    # Build the project, explicitly overriding no-build from the project's pyproject.toml
+    check_call([uv, "build", "--build"], cwd=project_root)
     # Test that we ignore unknown any file.
     project_root.joinpath("dist").joinpath(".DS_Store").touch()
 

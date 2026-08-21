@@ -48,6 +48,51 @@ fn sync() -> Result<()> {
     Ok(())
 }
 
+/// Installing a project does not distribute its unbounded build-system requirement.
+#[test]
+fn sync_unbounded_build_backend() -> Result<()> {
+    let context = uv_test::test_context!("3.12");
+
+    context
+        .temp_dir
+        .child("pyproject.toml")
+        .write_str(indoc! {r#"
+        [project]
+        name = "project"
+        version = "0.1.0"
+        requires-python = ">=3.12"
+
+        [build-system]
+        requires = ["uv-build"]
+        build-backend = "uv_build"
+    "#})?;
+    context.temp_dir.child("src/project/__init__.py").touch()?;
+
+    uv_snapshot!(context.filters(), context.sync().arg("--offline"), @"
+    exit_code: 0 (success)
+    ----- stderr -----
+    Resolved 1 package in [TIME]
+    Prepared 1 package in [TIME]
+    Installed 1 package in [TIME]
+     + project==0.1.0 (from file://[TEMP_DIR]/)
+    ");
+
+    uv_snapshot!(context.filters(), context.sync()
+        .arg("--offline")
+        .arg("--no-editable")
+        .arg("--reinstall"), @"
+    exit_code: 0 (success)
+    ----- stderr -----
+    Resolved 1 package in [TIME]
+    Prepared 1 package in [TIME]
+    Uninstalled 1 package in [TIME]
+    Installed 1 package in [TIME]
+     ~ project==0.1.0 (from file://[TEMP_DIR]/)
+    ");
+
+    Ok(())
+}
+
 /// With `relocatable-envs-default`, project environments are relocatable by default.
 #[test]
 fn sync_relocatable_envs_default() -> Result<()> {
@@ -10833,13 +10878,15 @@ fn lock_git_poetry_path_dependency() -> Result<()> {
     Ok(())
 }
 
-/// Lock a Git repository with generated metadata that references an archive within the repository.
+/// Sync a Git repository with generated metadata that references an archive within the repository.
 ///
 /// See: <https://github.com/astral-sh/uv/issues/15417>
 #[test]
 #[cfg(feature = "test-git")]
-fn lock_git_metadata_archive_dependency() -> Result<()> {
-    let context = uv_test::test_context!("3.13");
+fn sync_git_metadata_archive_dependency() -> Result<()> {
+    let context = uv_test::test_context!("3.13")
+        .with_filter((r"@[0-9a-f]{40}", "@[COMMIT]"))
+        .with_filter((r"#[0-9a-f]{40}", "#[COMMIT]"));
 
     let repository = context.temp_dir.child("repository");
     repository.child("root").create_dir_all()?;
@@ -10910,19 +10957,22 @@ fn lock_git_metadata_archive_dependency() -> Result<()> {
         root = {{ git = "{repository_url}", subdirectory = "root" }}
     "#})?;
 
-    uv_snapshot!(context.filters(), context.lock().arg("--no-cache"), @"
+    // A fresh sync should install the repository-relative archive. See astral-sh/uv#21244.
+    uv_snapshot!(context.filters(), context.sync().arg("--no-cache"), @"
     exit_code: 0 (success)
     ----- stderr -----
     Resolved 3 packages in [TIME]
+    Prepared 2 packages in [TIME]
+    Installed 2 packages in [TIME]
+     + basic-package==0.1.0 (from git+file://[TEMP_DIR]/repository/@[COMMIT]#path=root/archives/basic_package-0.1.0-py3-none-any.whl)
+     + root==0.1.0 (from git+file://[TEMP_DIR]/repository/@[COMMIT]#subdirectory=root)
     ");
 
     let lock = context.read("uv.lock");
-    let mut filters = context.filters();
-    filters.push((r"#[0-9a-f]{40}", "#[COMMIT]"));
 
     insta::with_settings!(
         {
-            filters => filters,
+            filters => context.filters(),
         },
         {
             assert_snapshot!(
@@ -10964,6 +11014,13 @@ fn lock_git_metadata_archive_dependency() -> Result<()> {
             );
         }
     );
+
+    uv_snapshot!(context.filters(), context.sync().arg("--no-cache"), @"
+    exit_code: 0 (success)
+    ----- stderr -----
+    Resolved 3 packages in [TIME]
+    Checked 2 packages in [TIME]
+    ");
 
     Ok(())
 }

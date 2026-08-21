@@ -1257,7 +1257,7 @@ impl InterpreterInfo {
                 cache_entry.path(),
                 rmp_serde::to_vec(&CachedByTimestamp {
                     timestamp: modified,
-                    data: info.clone(),
+                    data: &info,
                 })?,
             )?;
         }
