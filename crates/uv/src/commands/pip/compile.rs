@@ -47,7 +47,7 @@ use uv_resolver::{
 };
 use uv_settings::PythonInstallMirrors;
 use uv_static::EnvVars;
-use uv_torch::{AmdGpuArchitecture, TorchMode, TorchSource, TorchStrategy};
+use uv_torch::{AmdGpuArchitecture, TorchMode, TorchStrategy};
 use uv_types::{EmptyInstalledPackages, HashStrategy, SourceTreeEditablePolicy};
 use uv_warnings::warn_user;
 use uv_workspace::WorkspaceCache;
@@ -414,9 +414,9 @@ pub(crate) async fn pip_compile(
     // Generate, but don't enforce hashes for the requirements. PEP 751 _requires_ a hash to be
     // present, but otherwise, we omit them by default.
     let hasher = if generate_hashes || matches!(format, PipCompileFormat::PylockToml) {
-        HashStrategy::Generate(HashGeneration::All)
+        HashStrategy::generate(HashGeneration::All)
     } else {
-        HashStrategy::None
+        HashStrategy::default()
     };
 
     // Incorporate any index locations from the provided sources.
@@ -438,16 +438,8 @@ pub(crate) async fn pip_compile(
     // Determine the PyTorch backend.
     let torch_backend = torch_backend
         .map(|mode| {
-            let source = if uv_auth::PyxTokenStore::from_settings()
-                .is_ok_and(|store| store.has_credentials())
-            {
-                TorchSource::Pyx
-            } else {
-                TorchSource::default()
-            };
             TorchStrategy::from_mode(
                 mode,
-                source,
                 python_platform
                     .map(TargetTriple::platform)
                     .as_ref()
@@ -516,7 +508,7 @@ pub(crate) async fn pip_compile(
     };
 
     // Don't enforce hashes in `pip compile`.
-    let build_hashes = HashStrategy::None;
+    let build_hashes = HashStrategy::default();
     let build_constraints = Constraints::from_requirements(
         build_constraints
             .iter()

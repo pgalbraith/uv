@@ -50,7 +50,7 @@ use uv_resolver::{
 use uv_scripts::Pep723ItemRef;
 use uv_settings::PythonInstallMirrors;
 use uv_static::EnvVars;
-use uv_torch::{TorchSource, TorchStrategy};
+use uv_torch::TorchStrategy;
 use uv_types::{BuildIsolation, EmptyInstalledPackages, HashStrategy, SourceTreeEditablePolicy};
 use uv_warnings::{warn_user, warn_user_once};
 use uv_workspace::dependency_groups::DependencyGroupError;
@@ -64,8 +64,7 @@ use crate::commands::reporters::{PythonDownloadReporter, ResolverReporter};
 use crate::commands::{capitalize, conjunction, pip};
 use crate::printer::Printer;
 use crate::settings::{
-    FrozenSource, InstallerSettingsRef, LockCheckSource, ResolverInstallerSettings,
-    ResolverSettings,
+    FrozenSource, InstallerSettingsRef, LockedSource, ResolverInstallerSettings, ResolverSettings,
 };
 
 pub(crate) mod add;
@@ -89,66 +88,42 @@ pub(crate) mod version;
 /// The source of a missing lockfile error.
 #[derive(Debug, Clone, Copy)]
 pub(crate) enum MissingLockfileSource {
-    /// The `--frozen` flag was provided.
-    Frozen,
-    /// The `UV_FROZEN` environment variable was set.
-    FrozenEnv,
-    /// The `frozen` option was set via workspace configuration.
-    FrozenConfiguration,
-    /// The `--locked` flag was provided.
-    Locked,
-    /// The `UV_LOCKED` environment variable was set.
-    LockedEnv,
-    /// The `locked` option was set via workspace configuration.
-    LockedConfiguration,
-    /// The `--check` flag was provided.
-    Check,
+    /// Frozen mode required an existing lockfile.
+    Frozen(FrozenSource),
+    /// A lock check required an existing lockfile.
+    Locked(LockedSource),
 }
 
 impl std::fmt::Display for MissingLockfileSource {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         match self {
-            Self::Frozen => write!(f, "`--frozen`"),
-            Self::FrozenEnv => write!(f, "`UV_FROZEN=1`"),
-            Self::FrozenConfiguration => write!(f, "`frozen` (workspace configuration)"),
-            Self::Locked => write!(f, "`--locked`"),
-            Self::LockedEnv => write!(f, "`UV_LOCKED=1`"),
-            Self::LockedConfiguration => write!(f, "`locked` (workspace configuration)"),
-            Self::Check => write!(f, "`--check`"),
+            Self::Frozen(source) => write!(f, "`{source}`"),
+            Self::Locked(source) => write!(f, "`{source}`"),
         }
     }
 }
 
-impl From<LockCheckSource> for MissingLockfileSource {
-    fn from(source: LockCheckSource) -> Self {
-        match source {
-            LockCheckSource::LockedCli => Self::Locked,
-            LockCheckSource::LockedEnv => Self::LockedEnv,
-            LockCheckSource::LockedConfiguration => Self::LockedConfiguration,
-            LockCheckSource::Check => Self::Check,
-        }
+impl From<LockedSource> for MissingLockfileSource {
+    fn from(source: LockedSource) -> Self {
+        Self::Locked(source)
     }
 }
 
 impl From<FrozenSource> for MissingLockfileSource {
     fn from(source: FrozenSource) -> Self {
-        match source {
-            FrozenSource::Cli => Self::Frozen,
-            FrozenSource::Env => Self::FrozenEnv,
-            FrozenSource::Configuration => Self::FrozenConfiguration,
-        }
+        Self::Frozen(source)
     }
 }
 
 #[derive(thiserror::Error, Debug)]
 pub(crate) enum ProjectError {
     #[error("The lockfile at `uv.lock` needs to be updated, but `{2}` was provided.")]
-    LockMismatch(Option<Box<Lock>>, Box<Lock>, LockCheckSource),
+    LockMismatch(Option<Box<Lock>>, Box<Lock>, LockedSource),
 
     #[error(
         "The lockfile at `{0}` has non-canonical formatting at line {1}, but `{2}` was provided."
     )]
-    LockFormat(PathBuf, usize, LockCheckSource),
+    LockFormat(PathBuf, usize, LockedSource),
 
     #[error(
         "Unable to find lockfile at `{1}`, but {0} was provided. To create a lockfile, run `uv lock` or `uv sync` without the flag."
@@ -156,9 +131,9 @@ pub(crate) enum ProjectError {
     MissingLockfile(MissingLockfileSource, PathBuf),
 
     #[error(
-        "The lockfile at `uv.lock` needs to be updated, but `--frozen` was provided: Missing workspace member `{0}`."
+        "The lockfile at `uv.lock` needs to be updated, but {1} was provided: Missing workspace member `{0}`."
     )]
-    LockWorkspaceMismatch(PackageName),
+    LockWorkspaceMismatch(PackageName, MissingLockfileSource),
 
     #[error(
         "The lockfile at `uv.lock` uses an unsupported schema version (v{1}, but only v{0} is supported). Downgrade to a compatible uv version, or remove the `uv.lock` prior to running `uv lock` or `uv sync`."
@@ -2367,16 +2342,8 @@ pub(crate) async fn resolve_names(
     // Determine the PyTorch backend.
     let torch_backend = torch_backend
         .map(|mode| {
-            let source = if uv_auth::PyxTokenStore::from_settings()
-                .is_ok_and(|store| store.has_credentials())
-            {
-                TorchSource::Pyx
-            } else {
-                TorchSource::default()
-            };
             TorchStrategy::from_mode(
                 mode,
-                source,
                 interpreter.platform().os(),
                 cuda_driver_version.clone(),
                 *amd_gpu_architecture,
@@ -2598,16 +2565,8 @@ pub(crate) async fn resolve_environment(
     // Determine the PyTorch backend.
     let torch_backend = torch_backend
         .map(|mode| {
-            let source = if uv_auth::PyxTokenStore::from_settings()
-                .is_ok_and(|store| store.has_credentials())
-            {
-                TorchSource::Pyx
-            } else {
-                TorchSource::default()
-            };
             TorchStrategy::from_mode(
                 mode,
-                source,
                 python_platform
                     .map(|t| t.platform())
                     .as_ref()
@@ -2657,7 +2616,7 @@ pub(crate) async fn resolve_environment(
     let groups = BTreeMap::new();
     let hasher = match resolution_scope {
         EnvironmentResolution::Specific => HashStrategy::default(),
-        EnvironmentResolution::Universal => HashStrategy::Generate(HashGeneration::Url),
+        EnvironmentResolution::Universal => HashStrategy::generate(HashGeneration::Url),
     };
     let build_hasher = HashStrategy::default();
 
@@ -3041,16 +3000,8 @@ pub(crate) async fn update_environment(
     // Determine the PyTorch backend.
     let torch_backend = torch_backend
         .map(|mode| {
-            let source = if uv_auth::PyxTokenStore::from_settings()
-                .is_ok_and(|store| store.has_credentials())
-            {
-                TorchSource::Pyx
-            } else {
-                TorchSource::default()
-            };
             TorchStrategy::from_mode(
                 mode,
-                source,
                 python_platform
                     .map(|t| t.platform())
                     .as_ref()

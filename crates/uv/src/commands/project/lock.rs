@@ -56,7 +56,7 @@ use crate::commands::project::{
 use crate::commands::reporters::{PythonDownloadReporter, ResolverReporter};
 use crate::commands::{ExitStatus, ScriptPath, UvError, diagnostics, pip};
 use crate::printer::Printer;
-use crate::settings::{FrozenSource, LockCheck, LockCheckSource, ResolverSettings};
+use crate::settings::{FrozenSource, LockCheck, LockedSource, ResolverSettings};
 
 /// The result of running a lock operation.
 #[derive(Debug, Clone)]
@@ -230,19 +230,10 @@ pub(crate) async fn lock(
     {
         Ok(lock) => {
             if let Some(frozen_source) = frozen {
-                match frozen_source {
-                    FrozenSource::Cli => {
-                        warn_user!(
-                            "The lockfile at `uv.lock` was only checked for validity, not whether it is up-to-date, because `--frozen` was provided; use `--check` instead"
-                        );
-                    }
-                    FrozenSource::Env | FrozenSource::Configuration => {
-                        warn_user!(
-                            "The lockfile at `uv.lock` was only checked for validity, not whether it is up-to-date, because {} was provided; use `--check` instead",
-                            MissingLockfileSource::from(frozen_source)
-                        );
-                    }
-                }
+                warn_user!(
+                    "The lockfile at `uv.lock` was only checked for validity, not whether it is up-to-date, because {} was provided; use `--check` instead",
+                    MissingLockfileSource::from(frozen_source)
+                );
             }
 
             if dry_run.enabled() {
@@ -293,7 +284,7 @@ pub(crate) enum LockMode<'env> {
     /// Perform a resolution, but don't write the lockfile to disk.
     DryRun(&'env Interpreter),
     /// Error if the lockfile is not up-to-date with the project requirements.
-    Locked(&'env Interpreter, LockCheckSource),
+    Locked(&'env Interpreter, LockedSource),
     /// Use the existing lockfile without performing a resolution.
     Frozen(MissingLockfileSource),
 }
@@ -390,9 +381,11 @@ impl<'env> LockOperation<'env> {
                     for package_name in workspace.packages().keys() {
                         existing
                             .find_by_name(package_name)
-                            .map_err(|_| ProjectError::LockWorkspaceMismatch(package_name.clone()))?
+                            .map_err(|_| {
+                                ProjectError::LockWorkspaceMismatch(package_name.clone(), source)
+                            })?
                             .ok_or_else(|| {
-                                ProjectError::LockWorkspaceMismatch(package_name.clone())
+                                ProjectError::LockWorkspaceMismatch(package_name.clone(), source)
                             })?;
                     }
                 }
@@ -835,7 +828,7 @@ async fn do_lock(
         .build_options(build_options.clone())
         .artifact_environments(artifact_environments.clone())
         .build();
-    let hasher = HashStrategy::Generate(HashGeneration::Url);
+    let hasher = HashStrategy::generate(HashGeneration::Url);
 
     // TODO(charlie): These are all default values. We should consider whether we want to make them
     // optional on the downstream APIs.
@@ -918,7 +911,7 @@ async fn do_lock(
 
     // If any of the resolution-determining settings changed, invalidate the lock.
     let existing_lock = if let Some(existing_lock) = existing_lock {
-        match ValidatedLock::validate(
+        match Box::pin(ValidatedLock::validate(
             existing_lock,
             target.install_path(),
             packages,
@@ -945,7 +938,7 @@ async fn do_lock(
             &database,
             preview,
             printer,
-        )
+        ))
         .await
         {
             Ok(result) => Some(result),
@@ -1116,6 +1109,12 @@ async fn do_lock(
             .with_conflicts(conflicts)
             .with_required_environments(lock_required_environments.into_markers());
 
+            let lock = if preview.is_enabled(PreviewFeature::MissingExcludeNewerPackageLock) {
+                lock.without_unused_exclude_newer_packages()
+            } else {
+                lock
+            };
+
             let lock = if preview.is_enabled(PreviewFeature::LockWithoutMetadata) {
                 lock.without_package_metadata()
             } else {
@@ -1203,7 +1202,18 @@ impl ValidatedLock {
             );
             return Ok(Self::Unusable(lock));
         }
-        if let Some(change) = lock.exclude_newer().compare(&options.exclude_newer) {
+        // Ignore package-specific settings that cannot affect the existing resolution. If the
+        // package is added to the requirements, the requirement checks below will invalidate the
+        // lockfile instead.
+        let locked_exclude_newer = lock
+            .exclude_newer()
+            .clone()
+            .filter_packages(lock.packages().iter().map(Package::name));
+        let exclude_newer = options
+            .exclude_newer
+            .clone()
+            .filter_packages(lock.packages().iter().map(Package::name));
+        if let Some(change) = locked_exclude_newer.compare(&exclude_newer) {
             // If a relative value is used, we won't invalidate on every tick of the clock unless
             // the span duration changed or some other operation causes a new resolution
             if !change.is_relative_timestamp_change() {

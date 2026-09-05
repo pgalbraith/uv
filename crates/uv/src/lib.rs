@@ -79,6 +79,7 @@ pub(crate) fn base_client_builder<'a>(globals: &GlobalSettings) -> BaseClientBui
         globals.network_settings.connect_timeout,
         globals.network_settings.retries,
     )
+    .metadata_range_request(globals.network_settings.metadata_range_request)
     .cache_read_concurrency(globals.concurrency.cache_reads)
     .http_proxy(globals.network_settings.http_proxy.clone())
     .https_proxy(globals.network_settings.https_proxy.clone())
@@ -672,7 +673,6 @@ async fn run_with_workspace_cache(
                 args.username,
                 args.password,
                 args.token,
-                client_builder,
                 printer,
                 globals.preview,
             )
@@ -685,14 +685,7 @@ async fn run_with_workspace_cache(
             let args = settings::AuthLogoutSettings::resolve(args);
             show_settings!(args);
 
-            commands::auth_logout(
-                args.service,
-                args.username,
-                client_builder,
-                printer,
-                globals.preview,
-            )
-            .await
+            commands::auth_logout(args.service, args.username, printer, globals.preview).await
         }
         Commands::Auth(AuthNamespace {
             command: AuthCommand::Token(args),
@@ -701,19 +694,12 @@ async fn run_with_workspace_cache(
             let args = settings::AuthTokenSettings::resolve(args);
             show_settings!(args);
 
-            commands::auth_token(
-                args.service,
-                args.username,
-                client_builder,
-                printer,
-                globals.preview,
-            )
-            .await
+            commands::auth_token(args.service, args.username, printer, globals.preview).await
         }
         Commands::Auth(AuthNamespace {
-            command: AuthCommand::Dir(args),
+            command: AuthCommand::Dir,
         }) => {
-            commands::auth_dir(args.service.as_ref(), printer)?;
+            commands::auth_dir(printer)?;
             Ok(ExitStatus::Success)
         }
         Commands::Auth(AuthNamespace {
@@ -727,9 +713,7 @@ async fn run_with_workspace_cache(
             }
 
             match args.command {
-                AuthHelperCommand::Get => {
-                    commands::auth_helper(client_builder, globals.preview, printer).await
-                }
+                AuthHelperCommand::Get => commands::auth_helper(globals.preview, printer).await,
             }
         }
         Commands::Help(args) => commands::help(
@@ -2064,7 +2048,6 @@ async fn run_with_workspace_cache(
                 password,
                 dry_run,
                 no_attestations,
-                direct,
                 publish_url,
                 trusted_publishing,
                 keyring_provider,
@@ -2087,8 +2070,6 @@ async fn run_with_workspace_cache(
                 index_locations,
                 dry_run,
                 no_attestations,
-                direct,
-                globals.preview,
                 &cache,
                 printer,
             )
